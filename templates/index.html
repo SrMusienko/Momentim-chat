@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Чат</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="h-screen flex bg-gray-100">
+    <aside class="w-1/4 bg-white border-r overflow-y-auto flex flex-col">
+        <div class="p-4 font-bold border-b text-xl">Ваши чаты</div>
+        <div class="p-4 border-b">
+            <button id="new-chat-btn" class="w-full bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">
+                + Новый чат
+            </button>
+        </div>
+        <ul id="chat-list" class="divide-y flex-1 overflow-y-auto">
+            {% for chat in chats %}
+            <li class="p-4 hover:bg-gray-100 cursor-pointer flex justify-between items-center {% if active_chat and chat.id == active_chat.id %}bg-gray-200{% endif %}" data-chat-id="{{ chat.id }}">
+                <span>Чат от {{ chat.created_at.strftime('%d.%m.%Y %H:%M') }}</span>
+                <button class="delete-chat-btn text-red-500 hover:text-red-700 text-sm p-1 rounded" data-chat-id="{{ chat.id }}">
+                    &times;
+                </button>
+            </li>
+            {% endfor %}
+        </ul>
+    </aside>
+
+    <main class="flex flex-col flex-1">
+        <header class="flex justify-between items-center bg-white border-b p-4">
+            <div class="text-lg font-semibold">Пользователь: {{ user.username }}</div>
+            <a href="/logout" class="text-red-500 hover:underline">Выход</a>
+        </header>
+
+        <section id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-4">
+            {% if active_chat %}
+                {% for message in messages %}
+                <div class="flex {% if message.sender == user.username %}justify-end{% else %}justify-start{% endif %}">
+                    <div class="bg-white p-3 rounded shadow max-w-xs relative">
+                        <div class="font-semibold {% if message.sender == user.username %}text-blue-600{% else %}text-green-600{% endif %}">{{ message.sender }}</div>
+                        <div class="text-gray-700">{{ message.content }}</div>
+                        <div class="text-sm text-gray-400 text-right">{{ message.timestamp.strftime('%H:%M') }}</div>
+                        <button class="delete-message-btn absolute top-1 right-1 text-gray-400 hover:text-red-500 text-xs" data-message-id="{{ message.id }}">&times;</button>
+                    </div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="text-center text-gray-500">Выберите чат или создайте новый.</div>
+            {% endif %}
+        </section>
+
+        <form id="chat-form" class="p-4 bg-white border-t flex" {% if not active_chat %}style="display:none;"{% endif %}>
+            <input type="text" name="message" id="message-input" placeholder="Введите сообщение..." class="flex-1 p-2 border rounded mr-2" required>
+            <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Отправить</button>
+        </form>
+    </main>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const chatList = document.getElementById("chat-list");
+            const newChatBtn = document.getElementById("new-chat-btn");
+            const chatMessages = document.getElementById("chat-messages");
+            const chatForm = document.getElementById("chat-form");
+            const messageInput = document.getElementById("message-input");
+            const currentUser = "{{ user.username }}";
+            let activeChatId = "{{ active_chat.id if active_chat else '' }}";
+            if (activeChatId === "") {
+                activeChatId = null;
+            } else {
+                activeChatId = parseInt(activeChatId);
+            }
+            let websocket = null;
+            let aiTypingIndicator = null; //AI Typing Indicator
+
+            function getAuthToken() {
+                const name = "access_token=";
+                const decodedCookie = document.cookie;
+                const ca = decodedCookie.split(';');
+
+                for (let i = 0; i < ca.length; i++) {
+                    let c = ca[i];
+                    while (c.charAt(0) === ' ') {
+                        c = c.substring(1);
+                    }
+                    if (c.indexOf(name) === 0) {
+                        let tokenValue = c.substring(name.length, c.length);
+                        if (tokenValue.startsWith('"') && tokenValue.endsWith('"')) {
+                            tokenValue = tokenValue.substring(1, tokenValue.length - 1);
+                        }
+                        tokenValue = decodeURIComponent(tokenValue);
+                        if (tokenValue.startsWith("Bearer ")) {
+                            return tokenValue.substring("Bearer ".length);
+                        }
+                        return tokenValue;
+                    }
+                }
+                return null;
+            }
+
+            function addMessageToChat(message) {
+                const messageDiv = document.createElement('div');
+                const isCurrentUser = message.sender === currentUser;
+                messageDiv.className = `flex ${isCurrentUser ? 'justify-end' : 'justify-start'}`;
+
+                const senderName = message.sender === "AI" ? "AI" : message.sender;
+                const senderColor = message.sender === "AI" ? "text-green-600" : (isCurrentUser ? "text-blue-600" : "text-gray-800");
+
+                messageDiv.innerHTML = `
+                    <div class="bg-white p-3 rounded shadow max-w-xs relative" data-message-id="${message.id || ''}">
+                        <div class="font-semibold ${senderColor}">${senderName}</div>
+                        <div class="text-gray-700">${message.content}</div>
+                        <div class="text-sm text-gray-400 text-right">${new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                        ${isCurrentUser || message.sender === "AI" ? `<button class="delete-message-btn absolute top-1 right-1 text-gray-400 hover:text-red-500 text-xs" data-message-id="${message.id}">&times;</button>` : ''}
+                    </div>
+                `;
+                chatMessages.appendChild(messageDiv);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+
+            function showAITypingIndicator() {
+                if (!aiTypingIndicator) {
+                    aiTypingIndicator = document.createElement('div');
+                    aiTypingIndicator.className = 'flex justify-start';
+                    aiTypingIndicator.innerHTML = `
+                        <div class="bg-white p-3 rounded shadow max-w-xs">
+                            <div class="font-semibold text-green-600">AI</div>
+                            <div class="text-gray-500 italic">AI печатает ответ...</div>
+                        </div>
+                    `;
+                    chatMessages.appendChild(aiTypingIndicator);
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                }
+            }
+
+            function hideAITypingIndicator() {
+                if (aiTypingIndicator) {
+                    aiTypingIndicator.remove();
+                    aiTypingIndicator = null;
+                }
+            }
+
+            function connectWebSocket(chatId) {
+                if (websocket) {
+                    websocket.close();
+                }
+
+                const authToken = getAuthToken();
+                if (!authToken) {
+                    console.error("Authentication token not found for WebSocket.");
+                    window.location.href = "/login";
+                    return;
+                }
+
+                websocket = new WebSocket(`ws://${window.location.host}/ws/chat/${chatId}?token=${authToken}`);
+
+                websocket.onopen = () => {
+                    console.log(`WebSocket connected to chat ${chatId}`);
+                };
+
+                websocket.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    console.log("Received via WebSocket:", data);
+                    if (data.type === "new_message") {
+                        hideAITypingIndicator(); 
+                        addMessageToChat(data.message);
+                    } else if (data.type === "message_ack") {
+                        console.log(`Message ${data.message_id} delivered at ${data.timestamp}`);
+                    }
+                };
+
+                websocket.onclose = (event) => {
+                    console.log(`WebSocket disconnected from chat ${chatId}`, event.code, event.reason);
+                    if (event.code !== 1000 && event.code !== 1001 && activeChatId === chatId) {
+                        console.log("Attempting to reconnect WebSocket...");
+                        setTimeout(() => connectWebSocket(chatId), 1000);
+                    }
+                };
+
+                websocket.onerror = (error) => {
+                    console.error("WebSocket error:", error);
+                };
+            }
+
+            async function loadChatMessages(chatId) {
+                if (chatId === null) {
+                    chatMessages.innerHTML = '<div class="text-center text-gray-500">Выберите чат или создайте новый.</div>';
+                    chatForm.style.display = 'none';
+                    hideAITypingIndicator();
+                    if (websocket) {
+                        websocket.close();
+                        websocket = null;
+                    }
+                    return;
+                }
+                try {
+                    const response = await fetch(`/api/chats/${chatId}/messages`);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    const messages = await response.json();
+                    chatMessages.innerHTML = '';
+                    messages.forEach(msg => {
+                        addMessageToChat(msg);
+                    });
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                    chatForm.style.display = 'flex';
+                    activeChatId = chatId;
+
+                    connectWebSocket(chatId);
+
+                    document.querySelectorAll('#chat-list li').forEach(li => {
+                        li.classList.remove('bg-gray-200');
+                    });
+                    const currentActiveChatElement = document.querySelector(`#chat-list li[data-chat-id="${chatId}"]`);
+                    if (currentActiveChatElement) {
+                        currentActiveChatElement.classList.add('bg-gray-200');
+                    }
+                } catch (error) {
+                    console.error("Ошибка при загрузке сообщений чата:", error);
+                    chatMessages.innerHTML = '<div class="text-center text-red-500">Не удалось загрузить сообщения.</div>';
+                }
+            }
+
+            chatList.addEventListener("click", (e) => {
+                const targetLi = e.target.closest('li[data-chat-id]');
+                if (targetLi) {
+                    const chatId = parseInt(targetLi.dataset.chatId);
+                    if (e.target.classList.contains('delete-chat-btn')) {
+                        return;
+                    }
+                    if (chatId && chatId !== activeChatId) {
+                        loadChatMessages(chatId);
+                    }
+                }
+            });
+
+            // Handler for deleting chat
+            chatList.addEventListener("click", async (e) => {
+                if (e.target.classList.contains('delete-chat-btn')) {
+                    const chatIdToDelete = e.target.dataset.chatId;
+                    if (confirm("Вы уверены, что хотите удалить этот чат? Все сообщения будут безвозвратно удалены.")) {
+                        try {
+                            const response = await fetch(`/api/chats/${chatIdToDelete}`, {
+                                method: 'DELETE',
+                            });
+                            if (!response.ok) {
+                                throw new Error(`HTTP error! status: ${response.status}`);
+                            }
+                            e.target.closest('li[data-chat-id]').remove();
+
+                            if (parseInt(chatIdToDelete) === activeChatId) {
+                                activeChatId = null;
+                                loadChatMessages(null); 
+                            }
+                        } catch (error) {
+                            console.error("Ошибка при удалении чата:", error);
+                            alert("Не удалось удалить чат. Попробуйте еще раз.");
+                        }
+                    }
+                }
+            });
+
+
+            chatMessages.addEventListener("click", async (e) => {
+                if (e.target.classList.contains('delete-message-btn')) {
+                    const messageIdToDelete = e.target.dataset.messageId;
+                    if (confirm("Вы уверены, что хотите удалить это сообщение?")) {
+                        try {
+                            const response = await fetch(`/api/messages/${messageIdToDelete}`, {
+                                method: 'DELETE',
+                            });
+                            if (!response.ok) {
+                                throw new Error(`HTTP error! status: ${response.status}`);
+                            }
+                            e.target.closest('.flex').remove();
+                        } catch (error) {
+                            console.error("Ошибка при удалении сообщения:", error);
+                            alert("Не удалось удалить сообщение. Попробуйте еще раз.");
+                        }
+                    }
+                }
+            });
+
+
+            chatForm.addEventListener("submit", async (e) => {
+                e.preventDefault();
+                const message = messageInput.value.trim();
+                if (!message || activeChatId === null) return;
+
+                const tempUserMessage = {
+                    sender: currentUser,
+                    content: message,
+                    timestamp: new Date().toISOString()
+                };
+                addMessageToChat(tempUserMessage);
+                messageInput.value = "";
+                showAITypingIndicator();
+
+                try {
+                    const response = await fetch(`/api/chats/${activeChatId}/messages`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ content: message }),
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                } catch (error) {
+                    console.error("Ошибка при отправке сообщения:", error);
+                    hideAITypingIndicator(); 
+                }
+            });
+
+            newChatBtn.addEventListener("click", async () => {
+                try {
+                    const response = await fetch("/api/chats", {
+                        method: "POST",
+                        headers: {
+                            'Content-Type': 'application/json',
+                        }
+                    });
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    const newChat = await response.json();
+                    
+                    const newChatLi = document.createElement('li');
+                    newChatLi.className = 'p-4 hover:bg-gray-100 cursor-pointer flex justify-between items-center';
+                    newChatLi.dataset.chatId = newChat.id;
+                    newChatLi.innerHTML = `
+                        <span>Чат от ${new Date(newChat.created_at).toLocaleDateString([], { day: '2-digit', month: '2-digit', year: 'numeric' })} ${new Date(newChat.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        <button class="delete-chat-btn text-red-500 hover:text-red-700 text-sm p-1 rounded" data-chat-id="${newChat.id}">&times;</button>
+                    `;
+                    chatList.prepend(newChatLi);
+                    
+                    loadChatMessages(newChat.id);
+                } catch (error) {
+                    console.error("Ошибка при создании нового чата:", error);
+                }
+            });
+
+            if (activeChatId) {
+                loadChatMessages(activeChatId);
+            }
+        });
+    </script>
+</body>
+</html>
