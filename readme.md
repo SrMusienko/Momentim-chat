@@ -41,7 +41,49 @@ The main goal is to provide users with an intuitive interface to interact with t
 * **Deleting chat history:** Implemented deleting chat messages and the ability to delete the entire chat.
 * **Complex processing of seat numbers:** Seats are numbered in the format `XX-Y`, where `XX` is the row number (from 1 to 20), `Y` is the seat letter (from A to Q). AI checks the correctness of the format and the availability of seats.
 * **Filling the system with test data:** Implemented through the `fill_db.py` script and the `seed_data.json` file.
+## json file
+<details>
+<summary>seed_data.json</summary>
 
+```json
+
+{
+    "users": [
+      {"username": "alice", "email": "alice@example.com", "password": "alice123"},
+      {"username": "bob", "email": "bob@example.com", "password": "bob123"},
+      {"username": "carol", "email": "carol@example.com", "password": "carol123"},
+      {"username": "dave", "email": "dave@example.com", "password": "dave123"}
+    ],
+  
+    "weekly_performances": [
+      {
+        "title": "Ревізор",
+        "author": "Микола Гоголь",
+        "actors": "Іванов, Петренко"
+      },
+      {
+        "title": "Гамлет",
+        "author": "Вільям Шекспір",
+        "actors": "Коваленко, Сидорчук"
+      },
+      {
+        "title": "Кайдашева сім’я",
+        "author": "Іван Нечуй-Левицький",
+        "actors": "Омельченко, Лесько"
+      },
+      {
+        "title": "За двома зайцями",
+        "author": "Михайло Старицький",
+        "actors": "Шевченко, Гнатюк"
+      }
+    ]
+  }
+```
+</details> 
+
+## DB structure
+
+![BD](/static/images/0.png)
 ## Project structure
 ```
 
